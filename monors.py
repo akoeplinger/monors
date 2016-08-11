@@ -35,6 +35,7 @@ import logging
 import github
 import traceback
 from datetime import datetime, MINYEAR
+from slacker import Slacker
 
 class Comment:
     def __init__(self, login, body, created_at):
@@ -43,14 +44,16 @@ class Comment:
         self.created_at = created_at
 
 class Status:
-    def __init__(self, state, updated_at):
+    def __init__(self, state, updated_at, description):
         self.state = state
         self.updated_at = updated_at
+        self.description = description
 
 class PullReq:
-    def __init__(self, cfg, gh, info, reviewers):
+    def __init__(self, cfg, gh, slack, info, reviewers):
         self.cfg = cfg
         self.gh = gh
+        self.slack = slack
         self.info = info
         self.reviewers = [r.encode("utf8") for r in reviewers]
 
@@ -96,7 +99,7 @@ class PullReq:
         return "%s/%s/%s = %.8s" % (self.src_owner, self.src_repo, self.ref, self.sha)
 
     def description(self):
-        return "pull https://github.com/%s/%s/pull/%d - %s - '%s'" % (self.dst_owner, self.dst_repo, self.num, self.short(), self.title)
+        return "pull request https://github.com/%s/%s/pull/%d - %s - '%s'" % (self.dst_owner, self.dst_repo, self.num, self.short(), self.title)
 
     def add_comment(self, comment):
         if not self.dry_run:
@@ -143,6 +146,7 @@ class PullReq:
         return True
 
     def try_merge (self):
+        return
         if not self.is_mergeable ():
             return
 
@@ -159,7 +163,7 @@ class PullReq:
         for status in self.dst.statuses (self.sha).get ():
             if status ["creator"]["login"].encode ("utf8") == self.cfg["user"].encode("utf8"):
                 if status ["context"] not in statuses or datetime.strptime (status ["updated_at"], "%Y-%m-%dT%H:%M:%SZ") > statuses [status ["context"]].updated_at:
-                    statuses [status ["context"]] = Status (status ["state"].encode ("utf8"), datetime.strptime (status ["updated_at"], "%Y-%m-%dT%H:%M:%SZ"))
+                    statuses [status ["context"]] = Status (status ["state"].encode ("utf8"), datetime.strptime (status ["updated_at"], "%Y-%m-%dT%H:%M:%SZ", status["description"]))
 
         success = self.is_successful (statuses)
         if success is not True:
@@ -217,6 +221,32 @@ class PullReq:
             logging.info (message)
             # self.add_comment (message)
 
+    def try_slack (self):
+        logging.info ("Processing Slack notifications")
+
+        # structure:
+        #  - key: context
+        #  - value: Status
+        statuses = {}
+
+        logging.info ("loading statuses")
+        for status in self.dst.statuses (self.sha).get ():
+          if status ["context"] not in statuses or datetime.strptime (status ["updated_at"], "%Y-%m-%dT%H:%M:%SZ") > statuses [status ["context"]].updated_at:
+            statuses [status ["context"]] = Status (":white_check_mark:" if status ["state"] == "success" else ":volcano:", datetime.strptime (status ["updated_at"], "%Y-%m-%dT%H:%M:%SZ"), status["description"])
+
+        success = self.is_successful (statuses)
+        message = "Message to " + self.src_owner + ", sha: " + self.sha + ("\n\n PR#%d build results for <https://github.com/%s/%s/pull/%d|%s>" % (self.num, self.dst_owner, self.dst_repo, self.num, self.title)) + "\n"
+        for context, status in sorted(statuses.iteritems ()):
+          message += u"\n %s *%s*: %s" % (status.state, context, status.description)
+
+        user = self.slack.users.get_user_id("akoeplinger")
+        chan = self.slack.im.open(user)
+        self.slack.chat.post_message(channel=chan.body["channel"]["id"], text=message, as_user="true", unfurl_links="false")
+
+        logging.info ("Sent Slack notification")
+        return
+
+
 def get_collaborators (gh, owner, repo):
     page = 1
     while True:
@@ -247,6 +277,7 @@ def main():
     }
 
     gh = github.GitHub (username=cfg ["user"], access_token=cfg ["token"])
+    slack = Slacker ("xoxp-3414438323-11851053267-68288541460-b825953768")
 
     reviewers = sorted([collaborator ["login"] for collaborator in get_collaborators (gh, cfg["owner"], cfg["repo"])])
     logging.info("found %d collaborators: %s" % (len (reviewers), ", ".join (reviewers)))
@@ -258,7 +289,9 @@ def main():
     logging.info("considering %d pull requests", len (pulls))
 
     for pull in pulls:
-        PullReq (cfg, gh, gh.repos (cfg ["owner"]) (cfg ["repo"]).pulls (pull ["number"]).get (), reviewers).try_merge ()
+        pr = PullReq (cfg, gh, slack, gh.repos (cfg ["owner"]) (cfg ["repo"]).pulls (pull ["number"]).get (), reviewers)
+        pr.try_merge ()
+        pr.try_slack ()
 
 if __name__ == "__main__":
     try:
