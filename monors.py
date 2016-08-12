@@ -4,6 +4,7 @@
 #
 # Author:
 #  Ludovic Henry (ludovic@xamarin.com)
+#  Alexander Koeplinger (alexander.koeplinger@xamarin.com)
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -232,16 +233,25 @@ class PullReq:
         logging.info ("loading statuses")
         for status in self.dst.statuses (self.sha).get ():
           if status ["context"] not in statuses or datetime.strptime (status ["updated_at"], "%Y-%m-%dT%H:%M:%SZ") > statuses [status ["context"]].updated_at:
-            statuses [status ["context"]] = Status (":white_check_mark:" if status ["state"] == "success" else ":volcano:", datetime.strptime (status ["updated_at"], "%Y-%m-%dT%H:%M:%SZ"), status["description"])
+            statuses [status ["context"]] = Status (status ["state"].encode ("utf8"), datetime.strptime (status ["updated_at"], "%Y-%m-%dT%H:%M:%SZ"), status["description"])
 
         success = self.is_successful (statuses)
-        message = "Message to " + self.src_owner + ", sha: " + self.sha + ("\n\n PR#%d build results for <https://github.com/%s/%s/pull/%d|%s>" % (self.num, self.dst_owner, self.dst_repo, self.num, self.title)) + "\n"
-        for context, status in sorted(statuses.iteritems ()):
-          message += u"\n %s *%s*: %s" % (status.state, context, status.description)
+        recipient = self.info ["user"]["login"].encode ("utf8")
+        message = "Message to " + recipient + ", sha: " + self.sha + ("\n\nBuild results for PR#%d - <https://github.com/%s/%s/pull/%d|%s>" % (self.num, self.dst_owner, self.dst_repo, self.num, self.title)) + "\n"
 
-        user = self.slack.users.get_user_id("akoeplinger")
-        chan = self.slack.im.open(user)
-        self.slack.chat.post_message(channel=chan.body["channel"]["id"], text=message, as_user="true", unfurl_links="false")
+        attachments = []
+
+        for context, status in sorted (statuses.iteritems ()):
+          att = {}
+          att["fallback"] = "%s *%s*: %s" % (status.state, context, status.description)
+          att["text"] = "*%s*: %s" % (context, status.description)
+          att["color"] = "good" if status.state == "success" else ("#d3d3d3" if status.state == "pending" else "danger")
+          att["mrkdwn_in"] = ["text"]
+          attachments.append (att)
+
+        user = self.slack.users.get_user_id ("akoeplinger")
+        chan = self.slack.im.open (user).body["channel"]["id"]
+        self.slack.chat.post_message (channel=chan, text=message, as_user="true", unfurl_links="false", attachments=attachments)
 
         logging.info ("Sent Slack notification")
         return
@@ -273,11 +283,12 @@ def main():
         "repo":  os.environ ["MONORS_GH_REPO"],
         "user":  os.environ ["MONORS_GH_USERNAME"],
         "token": os.environ ["MONORS_GH_TOKEN"],
+        "slacktoken": os.environ ["MONORS_SL_TOKEN"],
         "dry_run": os.environ.get ("MONORS_DRY_RUN"),
     }
 
     gh = github.GitHub (username=cfg ["user"], access_token=cfg ["token"])
-    slack = Slacker ("xoxp-3414438323-11851053267-68288541460-b825953768")
+    slack = Slacker (cfg ["slacktoken"])
 
     reviewers = sorted([collaborator ["login"] for collaborator in get_collaborators (gh, cfg["owner"], cfg["repo"])])
     logging.info("found %d collaborators: %s" % (len (reviewers), ", ".join (reviewers)))
