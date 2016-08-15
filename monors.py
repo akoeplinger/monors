@@ -51,12 +51,13 @@ class Status:
         self.description = description
 
 class PullReq:
-    def __init__(self, cfg, gh, slack, info, reviewers):
+    def __init__(self, cfg, gh, slack, info, reviewers, gh_to_slack):
         self.cfg = cfg
         self.gh = gh
         self.slack = slack
         self.info = info
         self.reviewers = [r.encode("utf8") for r in reviewers]
+        self.gh_to_slack = gh_to_slack
 
         self.dry_run = self.cfg ["dry_run"] is not None
 
@@ -72,6 +73,7 @@ class PullReq:
             self.src_repo = "unknown repo"
 
         self.num = self.info ["number"]
+        self.id = "%s/%s/pulls/%d" % (self.dst_owner, self.dst_repo, self.num)
         self.ref = self.info ["head"]["ref"].encode("utf8")
         self.sha = self.info ["head"]["sha"].encode("utf8")
 
@@ -225,6 +227,22 @@ class PullReq:
     def try_slack (self):
         logging.info ("Processing Slack notifications")
 
+        history = json.load(open("monors_slack_history.json"))
+
+        if self.id in history and history[self.id]["sent_status_for_sha"] == self.sha:
+          logging.info ("Already sent Slack message for PR %d and sha %s, skipping." % (self.num, self.sha))
+          return
+
+	logging.info("sha not seen on PR %d yet: %s" % (self.num, self.sha))
+
+        recipient = self.info ["user"]["login"].encode ("utf8")
+        if not recipient in self.gh_to_slack:
+          logging.info ("Couldn't find %s in the GitHub<->Slack user mapping file, skipping." % recipient)
+          return
+
+        slack_username = self.gh_to_slack[recipient]
+        logging.info ("Mapped GitHub user %s to Slack user %s." % (recipient, slack_username))
+
         # structure:
         #  - key: context
         #  - value: Status
@@ -236,8 +254,7 @@ class PullReq:
             statuses [status ["context"]] = Status (status ["state"].encode ("utf8"), datetime.strptime (status ["updated_at"], "%Y-%m-%dT%H:%M:%SZ"), status["description"])
 
         success = self.is_successful (statuses)
-        recipient = self.info ["user"]["login"].encode ("utf8")
-        message = "Message to " + recipient + ", sha: " + self.sha + ("\n\nBuild results for PR#%d - <https://github.com/%s/%s/pull/%d|%s>" % (self.num, self.dst_owner, self.dst_repo, self.num, self.title)) + "\n"
+        message = "Build results for PR#%d - <https://github.com/%s/%s/pull/%d|%s>\n" % (self.num, self.dst_owner, self.dst_repo, self.num, self.title)
 
         attachments = []
 
@@ -249,8 +266,15 @@ class PullReq:
           att["mrkdwn_in"] = ["text"]
           attachments.append (att)
 
-        user = self.slack.users.get_user_id ("akoeplinger")
-        chan = self.slack.im.open (user).body["channel"]["id"]
+        # write to file before sending so a sent error doesn't cause an infinite send-fail-send loop
+        if not self.id in history:
+          history[self.id] = {}
+
+        history[self.id]["sent_status_for_sha"] = self.sha
+        json.dump(history, open("monors_slack_history.json", "w"), indent = 2, sort_keys = True)
+
+        userid = self.slack.users.get_user_id (slack_username)
+        chan = self.slack.im.open (userid).body["channel"]["id"]
         self.slack.chat.post_message (channel=chan, text=message, as_user="true", unfurl_links="false", attachments=attachments)
 
         logging.info ("Sent Slack notification")
@@ -290,6 +314,8 @@ def main():
     gh = github.GitHub (username=cfg ["user"], access_token=cfg ["token"])
     slack = Slacker (cfg ["slacktoken"])
 
+    gh_slack_usermapping = json.load(open("monors_slack_users.json"))
+
     reviewers = sorted([collaborator ["login"] for collaborator in get_collaborators (gh, cfg["owner"], cfg["repo"])])
     logging.info("found %d collaborators: %s" % (len (reviewers), ", ".join (reviewers)))
 
@@ -300,7 +326,7 @@ def main():
     logging.info("considering %d pull requests", len (pulls))
 
     for pull in pulls:
-        pr = PullReq (cfg, gh, slack, gh.repos (cfg ["owner"]) (cfg ["repo"]).pulls (pull ["number"]).get (), reviewers)
+        pr = PullReq (cfg, gh, slack, gh.repos (cfg ["owner"]) (cfg ["repo"]).pulls (pull ["number"]).get (), reviewers, gh_slack_usermapping)
         pr.try_merge ()
         pr.try_slack ()
 
