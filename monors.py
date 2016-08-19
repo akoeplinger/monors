@@ -148,6 +148,13 @@ class PullReq:
 
         return True
 
+    def is_done (self, statuses):
+        for status in statuses:
+            if statuses [status].state == "pending":
+                return False
+
+        return True
+
     def try_merge (self):
         return
         if not self.is_mergeable ():
@@ -224,24 +231,47 @@ class PullReq:
             logging.info (message)
             # self.add_comment (message)
 
+    def already_sent_message_for_pr (self, history):
+        if not self.id in history or history[self.id]["last_seen_sha"] != self.sha:
+          return False
+
+        # TODO: refactor/deduplicate this with below
+        # structure:
+        #  - key: context
+        #  - value: Status
+        statuses = {}
+
+        logging.info ("loading statuses")
+        for status in self.dst.statuses (self.sha).get ():
+          if status ["context"] not in statuses or datetime.strptime (status ["updated_at"], "%Y-%m-%dT%H:%M:%SZ") > statuses [status ["context"]].updated_at:
+            statuses [status ["context"]] = Status (status ["state"].encode ("utf8"), datetime.strptime (status ["updated_at"], "%Y-%m-%dT%H:%M:%SZ"), status["description"])
+
+        for context, status in sorted (statuses.iteritems ()):
+          if not context in history[self.id]["last_seen_status"]:
+            return False
+          if status.updated_at.isoformat () != history[self.id]["last_seen_status"][context]["updated_at"]:
+            return False
+
+        return True
+
     def try_slack (self):
         logging.info ("Processing Slack notifications")
 
-        history = json.load(open("monors_slack_history.json"))
+        history = json.load (open ("monors_slack_history.json"))
 
-        if self.id in history and history[self.id]["sent_status_for_sha"] == self.sha:
-          logging.info ("Already sent Slack message for PR %d and sha %s, skipping." % (self.num, self.sha))
+        if self.already_sent_message_for_pr (history):
+          logging.info ("Already sent Slack message for latest statuses in PR %d and sha %s, skipping." % (self.num, self.sha))
           return
 
-	logging.info("sha not seen on PR %d yet: %s" % (self.num, self.sha))
+	logging.info ("sha not seen on PR %d yet: %s" % (self.num, self.sha))
 
-        recipient = self.info ["user"]["login"].encode ("utf8")
-        if not recipient in self.gh_to_slack:
-          logging.info ("Couldn't find %s in the GitHub<->Slack user mapping file, skipping." % recipient)
+        gh_user = self.info ["user"]["login"].encode ("utf8")
+        if not gh_user in self.gh_to_slack:
+          logging.info ("Couldn't find %s in the GitHub<->Slack user mapping file, skipping." % gh_user)
           return
 
-        slack_username = self.gh_to_slack[recipient]
-        logging.info ("Mapped GitHub user %s to Slack user %s." % (recipient, slack_username))
+        slack_user = self.gh_to_slack[gh_user]
+        logging.info ("Mapped GitHub user %s to Slack user %s." % (gh_user, slack_user))
 
         # structure:
         #  - key: context
@@ -253,7 +283,11 @@ class PullReq:
           if status ["context"] not in statuses or datetime.strptime (status ["updated_at"], "%Y-%m-%dT%H:%M:%SZ") > statuses [status ["context"]].updated_at:
             statuses [status ["context"]] = Status (status ["state"].encode ("utf8"), datetime.strptime (status ["updated_at"], "%Y-%m-%dT%H:%M:%SZ"), status["description"])
 
-        success = self.is_successful (statuses)
+        done = self.is_done (statuses)
+        if not done:
+          logging.info ("PR builds are not done yet, skipping.")
+          return
+
         message = "Build results for PR#%d - <https://github.com/%s/%s/pull/%d|%s>\n" % (self.num, self.dst_owner, self.dst_repo, self.num, self.title)
 
         attachments = []
@@ -262,24 +296,41 @@ class PullReq:
           att = {}
           att["fallback"] = "%s *%s*: %s" % (status.state, context, status.description)
           att["text"] = "*%s*: %s" % (context, status.description)
-          att["color"] = "good" if status.state == "success" else ("#d3d3d3" if status.state == "pending" else "danger")
+          if status.state == "success":
+            att["color"] = "good"
+          elif status.state == "pending":
+            att["color"] = "#ffee58"
+          elif " 0 failed." in status.description:
+            att["color"] = "#f57f17"
+          elif " 1 failed." in status.description:
+            att["color"] = "#f57f17"
+          elif " 2 failed." in status.description:
+            att["color"] = "#f57f17"
+          else:
+            att["color"] = "#bf360c"
           att["mrkdwn_in"] = ["text"]
           attachments.append (att)
 
-        # write to file before sending so a sent error doesn't cause an infinite send-fail-send loop
         if not self.id in history:
           history[self.id] = {}
 
-        history[self.id]["sent_status_for_sha"] = self.sha
-        json.dump(history, open("monors_slack_history.json", "w"), indent = 2, sort_keys = True)
+        history[self.id]["last_seen_sha"] = self.sha
+        history[self.id]["last_seen_status"] = {}
 
-        userid = self.slack.users.get_user_id (slack_username)
+        for context, status in sorted (statuses.iteritems ()):
+          history[self.id]["last_seen_status"][context] = {}
+          history[self.id]["last_seen_status"][context]["state"] = status.state
+          history[self.id]["last_seen_status"][context]["updated_at"] = status.updated_at.isoformat ()
+
+        # write to file before sending so a send error doesn't cause an infinite send-fail-send loop
+        json.dump (history, open ("monors_slack_history.json", "w"), indent = 2, sort_keys = True)
+
+        userid = self.slack.users.get_user_id (slack_user)
         chan = self.slack.im.open (userid).body["channel"]["id"]
         self.slack.chat.post_message (channel=chan, text=message, as_user="true", unfurl_links="false", attachments=attachments)
 
-        logging.info ("Sent Slack notification")
+        logging.info ("Sent Slack notification to %s" % slack_user)
         return
-
 
 def get_collaborators (gh, owner, repo):
     page = 1
