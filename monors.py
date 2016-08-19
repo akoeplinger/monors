@@ -156,7 +156,6 @@ class PullReq:
         return True
 
     def try_merge (self):
-        return
         if not self.is_mergeable ():
             return
 
