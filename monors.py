@@ -365,8 +365,8 @@ def main():
     gh = github.GitHub (username=cfg ["user"], access_token=cfg ["token"])
     slack = Slacker (cfg ["slacktoken"])
 
-    gh.users('monojenkins').followers.get() # test authentication
-    logging.info ("Remaining GitHub API calls before reaching limit: %d" % gh.x_ratelimit_remaining)
+    rl = gh.rate_limit.get () # test authentication and rate limit
+    logging.info ("Remaining GitHub API calls before reaching limit: %d, resets at %s." % (rl["rate"]["remaining"], datetime.fromtimestamp(rl["rate"]["reset"])))
 
     gh_slack_usermapping = json.load(open("monors_slack_users.json"))
 
