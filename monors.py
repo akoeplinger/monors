@@ -365,6 +365,9 @@ def main():
     gh = github.GitHub (username=cfg ["user"], access_token=cfg ["token"])
     slack = Slacker (cfg ["slacktoken"])
 
+    gh.users('monojenkins').followers.get() # test authentication
+    logging.info ("Remaining GitHub API calls before reaching limit: %d" % gh.x_ratelimit_remaining)
+
     gh_slack_usermapping = json.load(open("monors_slack_users.json"))
 
     reviewers = sorted([collaborator ["login"] for collaborator in get_collaborators (gh, cfg["owner"], cfg["repo"])])
