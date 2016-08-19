@@ -45,10 +45,11 @@ class Comment:
         self.created_at = created_at
 
 class Status:
-    def __init__(self, state, updated_at, description):
+    def __init__(self, state, updated_at, description, target_url):
         self.state = state
         self.updated_at = updated_at
         self.description = description
+        self.target_url = target_url
 
 class PullReq:
     def __init__(self, cfg, gh, slack, info, reviewers, gh_to_slack):
@@ -172,7 +173,7 @@ class PullReq:
         for status in self.dst.statuses (self.sha).get ():
             if status ["creator"]["login"].encode ("utf8") == self.cfg["user"].encode("utf8"):
                 if status ["context"] not in statuses or datetime.strptime (status ["updated_at"], "%Y-%m-%dT%H:%M:%SZ") > statuses [status ["context"]].updated_at:
-                    statuses [status ["context"]] = Status (status ["state"].encode ("utf8"), datetime.strptime (status ["updated_at"], "%Y-%m-%dT%H:%M:%SZ", status["description"]))
+                    statuses [status ["context"]] = Status (status ["state"].encode ("utf8"), datetime.strptime (status ["updated_at"], "%Y-%m-%dT%H:%M:%SZ"), status["description"], status["target_url"])
 
         success = self.is_successful (statuses)
         if success is not True:
@@ -243,7 +244,7 @@ class PullReq:
         logging.info ("loading statuses")
         for status in self.dst.statuses (self.sha).get ():
           if status ["context"] not in statuses or datetime.strptime (status ["updated_at"], "%Y-%m-%dT%H:%M:%SZ") > statuses [status ["context"]].updated_at:
-            statuses [status ["context"]] = Status (status ["state"].encode ("utf8"), datetime.strptime (status ["updated_at"], "%Y-%m-%dT%H:%M:%SZ"), status["description"])
+            statuses [status ["context"]] = Status (status ["state"].encode ("utf8"), datetime.strptime (status ["updated_at"], "%Y-%m-%dT%H:%M:%SZ"), status["description"], status["target_url"])
 
         for context, status in sorted (statuses.iteritems ()):
           if not context in history[self.id]["last_seen_status"]:
@@ -280,7 +281,7 @@ class PullReq:
         logging.info ("loading statuses")
         for status in self.dst.statuses (self.sha).get ():
           if status ["context"] not in statuses or datetime.strptime (status ["updated_at"], "%Y-%m-%dT%H:%M:%SZ") > statuses [status ["context"]].updated_at:
-            statuses [status ["context"]] = Status (status ["state"].encode ("utf8"), datetime.strptime (status ["updated_at"], "%Y-%m-%dT%H:%M:%SZ"), status["description"])
+            statuses [status ["context"]] = Status (status ["state"].encode ("utf8"), datetime.strptime (status ["updated_at"], "%Y-%m-%dT%H:%M:%SZ"), status["description"], status["target_url"])
 
         done = self.is_done (statuses)
         if not done:
@@ -294,7 +295,7 @@ class PullReq:
         for context, status in sorted (statuses.iteritems ()):
           att = {}
           att["fallback"] = "%s *%s*: %s" % (status.state, context, status.description)
-          att["text"] = "*%s*: %s" % (context, status.description)
+          att["text"] = "*<%s|%s>*: %s" % (status.target_url, context, status.description)
           if status.state == "success":
             att["color"] = "good"
           elif status.state == "pending":
