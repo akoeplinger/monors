@@ -325,9 +325,8 @@ class PullReq:
         # write to file before sending so a send error doesn't cause an infinite send-fail-send loop
         json.dump (history, open ("monors_slack_history.json", "w"), indent = 2, sort_keys = True)
 
-        userid = self.slack.users.get_user_id (slack_user)
         chan = self.slack.im.open (userid).body["channel"]["id"]
-        self.slack.chat.post_message (channel=chan, text=message, as_user="true", unfurl_links="false", attachments=attachments)
+        self.slack.chat.post_message (channel="@%s" % slack_user, text=message, as_user="true", unfurl_links="false", attachments=attachments)
 
         logging.info ("Sent Slack notification to %s" % slack_user)
         return
