@@ -78,9 +78,10 @@ class PullReq:
         self.mandatory_context = [
             "Linux i386",
             "Linux x64",
-            # "OS X i386",
-            # "OS X x64",
+            "OS X i386",
+            "OS X x64",
             "Windows i386",
+            "Windows x64",
         ]
 
         logging.info ("----- loading %s" % (self.description ()))
@@ -132,11 +133,15 @@ class PullReq:
         return False
 
     def is_successful (self, statuses):
+        # first check that all context are done running
         for context in self.mandatory_context:
             if context not in statuses:
                 return None
             if statuses [context].state == "pending":
                 return None
+
+        # second check if any context is failed
+        for context in self.mandatory_context:
             if statuses [context].state != "success":
                 return False
 
